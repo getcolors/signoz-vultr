@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "package-signoz-green": {
+      "source": "getcolors/signoz",
+      "sourceType": "github",
+      "skillPath": "skills/package-signoz-green/SKILL.md",
+      "computedHash": "ebe03e54b496f9d225de352976584b60f03d0e9b302f864e1b43d45737198936"
+    }
+  }
+}

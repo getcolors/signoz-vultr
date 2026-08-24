@@ -1,0 +1,113 @@
+# Desired state for signoz-vultr. Non-secret values only.
+# Credentials belong in the gitignored .envrc.private as COLORS_PAR_* variables.
+# Never export COLORS_PAR_PROFILE: it selects this deployment's remote state.
+#
+# Required credentials:
+#   Vultr           COLORS_PAR_VULTR_API_KEY
+#   Cloudflare      COLORS_PAR_CLOUDFLARE_API_TOKEN
+#                   (edit rights on the bigconfig.online zone)
+#   state in R2     COLORS_PAR_R2_ACCESS_KEY_ID
+#                   COLORS_PAR_R2_SECRET_ACCESS_KEY
+#   backups in R2   COLORS_PAR_SIGNOZ_BACKUP_R2_ACCESS_KEY_ID
+#                   COLORS_PAR_SIGNOZ_BACKUP_R2_SECRET_ACCESS_KEY
+#   application     COLORS_PAR_SIGNOZ_ROOT_PASSWORD
+#
+# The OTLP ingestion bearer token and the Postgres password are generated on
+# the server during convergence and are not operator-supplied credentials.
+# Retrieve the ingestion token over SSH; see README.
+
+profile: signoz-vultr
+workdir: .colors
+
+provider-compute: vultr
+provider-dns: cloudflare
+provider-backend: r2
+
+# Preserve this guard in committed desired state. Destruction requires an
+# explicitly authorized one-run override; never edit this flag to bypass it.
+compute-prevent-destroy: true
+
+# --- SigNoz -----------------------------------------------------------------
+
+# Public hostname for the SigNoz UI. Caddy terminates TLS and proxies OTLP/HTTP
+# ingestion under the same host, so telemetry and UI share 443.
+signoz-host: signoz.bigconfig.online
+
+# The root account SigNoz provisions at startup from SIGNOZ_USER_ROOT_*; its
+# password is COLORS_PAR_SIGNOZ_ROOT_PASSWORD. Provisioning runs at startup
+# only, so changing either value takes effect on the next container restart.
+# The root user cannot be edited or deleted from the UI by design.
+signoz-root-email: claude@ululi.it
+# Must match the organization name already in the metastore once one exists;
+# changing it on a live deployment fails provisioning rather than renaming.
+signoz-root-org-name: default
+
+# Container images, one key per service. The application and the collector
+# version independently: v0.138.0 and v0.144.8 are the pair SigNoz's own Helm
+# chart ships together, and the collector owns the ClickHouse schema the
+# application queries, so move them together or not at all.
+signoz-image: signoz/signoz:v0.138.0
+signoz-collector-image: signoz/signoz-otel-collector:v0.144.8
+signoz-clickhouse-image: clickhouse/clickhouse-server:25.12.5
+signoz-clickhouse-keeper-image: clickhouse/clickhouse-keeper:25.12.5
+signoz-postgres-image: postgres:16.15
+signoz-caddy-image: caddy:2.11.4
+
+# The histogramQuantile user-defined function is a binary fetched from GitHub
+# releases into the ClickHouse user_scripts volume before the server starts.
+# Without it the stack still comes up and only quantile queries fail, which is
+# why acceptance asserts the function is registered rather than trusting exits.
+signoz-histogram-quantile-version: v0.0.1
+
+# --- Ingestion --------------------------------------------------------------
+
+# SigNoz community edition has no ingestion keys: the collector accepts OTLP
+# from anyone who can reach it. Caddy therefore admits /v1/{logs,traces,metrics}
+# only with a bearer token generated on the server, and 4317/4318 stay bound to
+# loopback so the firewall never needs to open them. OTLP/gRPC is not exposed.
+signoz-ingestion-token-file: /etc/signoz/ingestion.env
+
+# --- Backups ----------------------------------------------------------------
+
+# The Postgres metastore only: users, dashboards, alert rules and saved views.
+# The telemetry databases are deliberately excluded — they are regenerable,
+# they age out on their own retention, and a hot copy races ClickHouse merges.
+signoz-backup-dir: /var/backups/signoz
+# This deployment owns only the signoz-vultr/ prefix it writes. The bucket must
+# already exist; never delete it or objects written by anything else.
+signoz-backup-r2-bucket: signoz-backup
+signoz-backup-r2-endpoint: https://319271fed8bc6d2d9059362be1165f37.eu.r2.cloudflarestorage.com
+signoz-backup-r2-region: auto
+signoz-backup-oncalendar: "*-*-* 02:30:00"
+signoz-backup-retention-days: 7
+
+# --- Vultr ------------------------------------------------------------------
+
+vultr-name: signoz-vultr
+vultr-region: ams
+# ClickHouse, ClickHouse Keeper, Postgres, the collector and the application
+# are colocated; upstream states a 4 GiB floor for Docker alone, so 4 vCPU /
+# 8 GiB is the realistic plan.
+vultr-plan: vc2-4c-8gb
+# Vultr operating systems are numeric ids; 2284 is Ubuntu 24.04 LTS x64.
+vultr-os-id: 2284
+
+# No vultr-ssh-keys: keygen mode per workspace standards/ssh-keypair.md. The
+# package generates and owns ~/.ssh/signoz-vultr and registers the account key
+# resource named after the profile. Setting vultr-ssh-keys here would switch
+# this deployment to opt-out mode.
+
+# SSH is key-only and used for convergence and recovery. HTTP(S) is public so
+# Cloudflare, telemetry senders, and the acceptance checks can reach the host;
+# the bearer token, not the firewall, is what gates ingestion.
+vultr-ssh-sources:
+  - 0.0.0.0/0
+  - "::/0"
+vultr-http-sources:
+  - 0.0.0.0/0
+  - "::/0"
+
+# --- R2 state backend -------------------------------------------------------
+
+r2-bucket: tofu-state-319271fed8bc6d2d9059362be1165f37-eu
+r2-endpoint: https://319271fed8bc6d2d9059362be1165f37.eu.r2.cloudflarestorage.com
